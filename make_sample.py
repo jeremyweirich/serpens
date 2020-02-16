@@ -123,6 +123,7 @@ def stars():
 
 
 def build_sample(dir=r"sample", n=10, classes=2, functions=8):
+    """Build a bunch of sample classes by stitching a random combination of methods together"""
     for _ in range(n):
         name = random.choice(STARS)
         sname = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()

@@ -4,3 +4,4 @@ flake8
 python-dotenv
 requests
 lxml
+astor
