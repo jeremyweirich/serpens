@@ -59,6 +59,7 @@ def parse(p):
         if not isinstance(statement, ast.ClassDef):
             continue
         class_attrs = set()
+        cname = statement.name
         for f in statement.body:
             if isinstance(f, ast.Assign):
                 for cs in ast.walk(f):
@@ -69,15 +70,16 @@ def parse(p):
             if f.name == "__init__":
                 continue
             name, decorators, variables, accesses = function_props(f)
-
             current_category, new_category = classify_function(
                 class_attrs, decorators, variables, accesses
             )
             if current_category == new_category:
-                print(f"CORRECT: {name} should stay a {current_category} method")
+                print(
+                    f"CORRECT: {cname}.{name} should stay a {current_category} method"
+                )
             else:
                 print(
-                    f"CHANGE: {name} is a {current_category} method and should be a {new_category} method"
+                    f"CHANGE: {cname}.{name} is a {current_category} method and should be a {new_category} method"
                 )
 
 
