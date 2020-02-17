@@ -65,7 +65,10 @@ that the *right* way to do it was to parse the AST.  This repo is me learning ho
         - remove `self` from the args
 
 
-## Misc
+## Comments
+The `ast` docs were not helpful at all.  Slightly more helpful was [Green Tree Snakes](https://greentreesnakes.readthedocs.io/en/latest/index.html)
+
+ 
 The most helpful tool when working on this was the formatted output of `ast.dump()`.  The easiest way I could find to 
 get a nicely formatted output was to save the output of `ast.dump()`, `import * from ast` to fix all the import errors,
 then run black on the file.  Here's the full parse tree for the `Foo` class in the Motiviation (with the `Module` 
