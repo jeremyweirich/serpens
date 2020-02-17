@@ -3,7 +3,7 @@ import ast
 import astor
 
 
-def function_props(f):
+def _function_props(f):
     decorators = [d.id for d in f.decorator_list]
     access_locations = set()
     accesses = set()
@@ -24,7 +24,7 @@ def function_props(f):
     return f.name, decorators, variables, accesses
 
 
-def classify_function(class_attrs, decorators, variables, accesses):
+def _classify_function(class_attrs, decorators, variables, accesses):
     """
     Does it use self?
     Y -> Could all uses of self be cls?
@@ -51,9 +51,12 @@ def classify_function(class_attrs, decorators, variables, accesses):
     return current_category, "static"
 
 
-class SelfToClass(ast.NodeTransformer):
+class ToClass(ast.NodeTransformer):
+    def __init__(self, class_name):
+        self.class_name = class_name
+
     def visit_Name(self, node):
-        if node.id == "self":
+        if node.id == "self" or node.id == self.class_name:
             node = ast.copy_location(ast.Name(id="cls", ctx=ast.Load()), node)
         return self.generic_visit(node)
 
@@ -65,9 +68,11 @@ class Serpens(ast.NodeTransformer):
         self.instance_to_class = set()
         self.class_to_static = set()
         self.static_to_class = set()
+        self.class_name = None
 
     def visit_ClassDef(self, node):
         class_attrs = set()
+        self.class_name = node.name
         for f in node.body:
             if isinstance(f, ast.Assign):
                 for cs in ast.walk(f):
@@ -77,15 +82,10 @@ class Serpens(ast.NodeTransformer):
                 continue
             if f.name == "__init__":
                 continue
-            name, decorators, variables, accesses = function_props(f)
-            current_category, new_category = classify_function(
+            name, decorators, variables, accesses = _function_props(f)
+            current_category, new_category = _classify_function(
                 class_attrs, decorators, variables, accesses
             )
-
-            # if current_category == new_category:
-            #     print( f"CORRECT: {cname}.{name} should stay {current_category}")
-            # else:
-            #     print(f"CHANGE: {cname}.{name} should change {current_category} > {new_category}")
 
             function_location = (f.lineno, f.col_offset)
             if current_category == "instance":
@@ -103,26 +103,53 @@ class Serpens(ast.NodeTransformer):
     def visit_FunctionDef(self, node):
         loc = (node.lineno, node.col_offset)
         if loc in self.static_to_class:
-            print(f"{node.name} static > class")
-        if loc in self.class_to_static:
-            print(f"{node.name} class > static")
-        if loc in self.instance_to_class:
-            print(f"{node.name} instance > class")
-            args = [ast.arg(arg="cls", annotation=None)] + [
+            print(
+                f"Converting {self.class_name}.{node.name} at {loc} from static > class"
+            )
+            args = node.args
+            args.args = [ast.arg(arg="cls", annotation=None)] + [
                 i for i in node.args.args if i.arg != "self"
             ]
-            node = SelfToClass().visit(node)
+            node = ToClass(self.class_name).visit(node)
             node = ast.copy_location(
                 ast.FunctionDef(
                     name=node.name,
-                    args=ast.arguments(
-                        args=args,
-                        vararg=node.args.vararg,
-                        kwonlyargs=node.args.kwonlyargs,
-                        kw_defaults=node.args.kw_defaults,
-                        kwarg=node.args.kwarg,
-                        defaults=node.args.defaults,
-                    ),
+                    args=args,
+                    body=node.body,
+                    decorator_list=[ast.Name(id="classmethod", ctx=ast.Load())],
+                    returns=node.returns,
+                ),
+                node,
+            )
+        if loc in self.class_to_static:
+            print(
+                f"Converting {self.class_name}.{node.name} at {loc} from class > static"
+            )
+            args = node.args
+            args.args = [i for i in node.args.args if i.arg != "cls"]
+            node = ast.copy_location(
+                ast.FunctionDef(
+                    name=node.name,
+                    args=args,
+                    body=node.body,
+                    decorator_list=[ast.Name(id="staticmethod", ctx=ast.Load())],
+                    returns=node.returns,
+                ),
+                node,
+            )
+        if loc in self.instance_to_class:
+            print(
+                f"Converting {self.class_name}.{node.name} at {loc} from instance > class"
+            )
+            args = node.args
+            args.args = [ast.arg(arg="cls", annotation=None)] + [
+                i for i in node.args.args if i.arg != "self"
+            ]
+            node = ToClass(self.class_name).visit(node)
+            node = ast.copy_location(
+                ast.FunctionDef(
+                    name=node.name,
+                    args=args,
                     body=node.body,
                     decorator_list=[ast.Name(id="classmethod", ctx=ast.Load())],
                     returns=node.returns,
@@ -130,18 +157,15 @@ class Serpens(ast.NodeTransformer):
                 node,
             )
         if loc in self.instance_to_static:
-            print(f"{node.name} instance > static")
+            print(
+                f"Converting {self.class_name}.{node.name} at {loc} from instance > static"
+            )
+            args = node.args
+            args.args = [i for i in node.args.args if i.arg != "self"]
             node = ast.copy_location(
                 ast.FunctionDef(
                     name=node.name,
-                    args=ast.arguments(
-                        args=[i for i in node.args.args if i.arg != "self"],
-                        vararg=node.args.vararg,
-                        kwonlyargs=node.args.kwonlyargs,
-                        kw_defaults=node.args.kw_defaults,
-                        kwarg=node.args.kwarg,
-                        defaults=node.args.defaults,
-                    ),
+                    args=args,
                     body=node.body,
                     decorator_list=[ast.Name(id="staticmethod", ctx=ast.Load())],
                     returns=node.returns,
@@ -151,9 +175,20 @@ class Serpens(ast.NodeTransformer):
         return self.generic_visit(node)
 
 
-if __name__ == "__main__":
-    with open("sample/armus.py") as f:
+def decorator_fix(p, dryrun=False):
+    with open(p) as f:
         tree = ast.parse(f.read())
     node = Serpens().visit(tree)
-    with open("modified.py", "w") as f:
+    if not dryrun:
+        with open(p, "w") as f:
+            f.write(astor.to_source(node))
+
+
+if __name__ == "__main__":
+    decorator_fix("samples/inplace.py", dryrun=True)
+
+    with open("samples/before.py") as f:
+        tree = ast.parse(f.read())
+    node = Serpens().visit(tree)
+    with open("samples/after.py", "w") as f:
         f.write(astor.to_source(node))
