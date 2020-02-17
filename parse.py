@@ -64,10 +64,7 @@ class ToClass(ast.NodeTransformer):
 class Serpens(ast.NodeTransformer):
     def __init__(self, *args, **kwargs):
         super(Serpens, self).__init__(*args, **kwargs)
-        self.instance_to_static = set()
-        self.instance_to_class = set()
-        self.class_to_static = set()
-        self.static_to_class = set()
+        self.transformations = {}
         self.class_name = None
 
     def visit_ClassDef(self, node):
@@ -82,49 +79,41 @@ class Serpens(ast.NodeTransformer):
                 continue
             if f.name == "__init__":
                 continue
+
             name, decorators, variables, accesses = _function_props(f)
-            current_category, new_category = _classify_function(
+            current_category, target_category = _classify_function(
                 class_attrs, decorators, variables, accesses
             )
 
-            function_location = (f.lineno, f.col_offset)
-            if current_category == "instance":
-                if new_category == "static":
-                    self.instance_to_static.add(function_location)
-                elif new_category == "class":
-                    self.instance_to_class.add(function_location)
-            elif current_category == "class" and new_category == "static":
-                self.class_to_static.add(function_location)
-            elif current_category == "static" and new_category == "class":
-                self.static_to_class.add(function_location)
+            if current_category != target_category:
+                self.transformations[(f.lineno, f.col_offset)] = (current_category, target_category)
 
         return self.generic_visit(node)
 
     def visit_FunctionDef(self, node):
         loc = (node.lineno, node.col_offset)
-        if loc in self.static_to_class:
-            print(
-                f"Converting {self.class_name}.{node.name} at {loc} from static > class"
-            )
+        if loc not in self.transformations:
+            return self.generic_visit(node)
+
+        stripped_decs = [i for i in node.decorator_list if i.id not in ('staticmethod', 'classmethod')]
+
+        if self.transformations[loc] == ('static', 'class'):
+            print(f"{self.class_name}.{node.name} {loc}: static > class")
             args = node.args
-            args.args = [ast.arg(arg="cls", annotation=None)] + [
-                i for i in node.args.args if i.arg != "self"
-            ]
+            args.args = [ast.arg(arg="cls", annotation=None)] + [i for i in node.args.args]
             node = ToClass(self.class_name).visit(node)
             node = ast.copy_location(
                 ast.FunctionDef(
                     name=node.name,
                     args=args,
                     body=node.body,
-                    decorator_list=[ast.Name(id="classmethod", ctx=ast.Load())],
+                    decorator_list=[ast.Name(id="classmethod", ctx=ast.Load())] + stripped_decs,
                     returns=node.returns,
                 ),
                 node,
             )
-        if loc in self.class_to_static:
-            print(
-                f"Converting {self.class_name}.{node.name} at {loc} from class > static"
-            )
+        elif self.transformations[loc] == ('class', 'static'):
+            print(f"{self.class_name}.{node.name} {loc}: class > static")
             args = node.args
             args.args = [i for i in node.args.args if i.arg != "cls"]
             node = ast.copy_location(
@@ -132,15 +121,13 @@ class Serpens(ast.NodeTransformer):
                     name=node.name,
                     args=args,
                     body=node.body,
-                    decorator_list=[ast.Name(id="staticmethod", ctx=ast.Load())],
+                    decorator_list=[ast.Name(id="staticmethod", ctx=ast.Load())] + stripped_decs,
                     returns=node.returns,
                 ),
                 node,
             )
-        if loc in self.instance_to_class:
-            print(
-                f"Converting {self.class_name}.{node.name} at {loc} from instance > class"
-            )
+        elif self.transformations[loc] == ('instance', 'class'):
+            print(f"{self.class_name}.{node.name} {loc}: instance > class")
             args = node.args
             args.args = [ast.arg(arg="cls", annotation=None)] + [
                 i for i in node.args.args if i.arg != "self"
@@ -151,15 +138,13 @@ class Serpens(ast.NodeTransformer):
                     name=node.name,
                     args=args,
                     body=node.body,
-                    decorator_list=[ast.Name(id="classmethod", ctx=ast.Load())],
+                    decorator_list=[ast.Name(id="classmethod", ctx=ast.Load())] + stripped_decs,
                     returns=node.returns,
                 ),
                 node,
             )
-        if loc in self.instance_to_static:
-            print(
-                f"Converting {self.class_name}.{node.name} at {loc} from instance > static"
-            )
+        elif self.transformations[loc] == ('instance', 'static'):
+            print(f"{self.class_name}.{node.name} {loc}: instance > static")
             args = node.args
             args.args = [i for i in node.args.args if i.arg != "self"]
             node = ast.copy_location(
@@ -167,7 +152,7 @@ class Serpens(ast.NodeTransformer):
                     name=node.name,
                     args=args,
                     body=node.body,
-                    decorator_list=[ast.Name(id="staticmethod", ctx=ast.Load())],
+                    decorator_list=[ast.Name(id="staticmethod", ctx=ast.Load())] + stripped_decs,
                     returns=node.returns,
                 ),
                 node,
