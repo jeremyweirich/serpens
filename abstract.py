@@ -1,6 +1,6 @@
 import ast
 
-# import astor
+import astor
 
 
 def function_props(f):
@@ -34,7 +34,6 @@ def classify_function(class_attrs, decorators, variables, accesses):
         Y -> Class
         N -> Static
     """
-
     current_category = "instance"
     if "staticmethod" in decorators:
         current_category = "static"
@@ -52,15 +51,24 @@ def classify_function(class_attrs, decorators, variables, accesses):
     return current_category, "static"
 
 
-def parse(p):
-    with open(p) as f:
-        tree = ast.parse(f.read())
-    for statement in ast.walk(tree):
-        if not isinstance(statement, ast.ClassDef):
-            continue
+class SelfToClass(ast.NodeTransformer):
+    def visit_Name(self, node):
+        if node.id == "self":
+            node = ast.copy_location(ast.Name(id="cls", ctx=ast.Load()), node)
+        return self.generic_visit(node)
+
+
+class Serpens(ast.NodeTransformer):
+    def __init__(self, *args, **kwargs):
+        super(Serpens, self).__init__(*args, **kwargs)
+        self.instance_to_static = set()
+        self.instance_to_class = set()
+        self.class_to_static = set()
+        self.static_to_class = set()
+
+    def visit_ClassDef(self, node):
         class_attrs = set()
-        cname = statement.name
-        for f in statement.body:
+        for f in node.body:
             if isinstance(f, ast.Assign):
                 for cs in ast.walk(f):
                     if isinstance(cs, ast.Name):
@@ -73,15 +81,79 @@ def parse(p):
             current_category, new_category = classify_function(
                 class_attrs, decorators, variables, accesses
             )
-            if current_category == new_category:
-                print(
-                    f"CORRECT: {cname}.{name} should stay a {current_category} method"
-                )
-            else:
-                print(
-                    f"CHANGE: {cname}.{name} is a {current_category} method and should be a {new_category} method"
-                )
+
+            # if current_category == new_category:
+            #     print( f"CORRECT: {cname}.{name} should stay {current_category}")
+            # else:
+            #     print(f"CHANGE: {cname}.{name} should change {current_category} > {new_category}")
+
+            function_location = (f.lineno, f.col_offset)
+            if current_category == "instance":
+                if new_category == "static":
+                    self.instance_to_static.add(function_location)
+                elif new_category == "class":
+                    self.instance_to_class.add(function_location)
+            elif current_category == "class" and new_category == "static":
+                self.class_to_static.add(function_location)
+            elif current_category == "static" and new_category == "class":
+                self.static_to_class.add(function_location)
+
+        return self.generic_visit(node)
+
+    def visit_FunctionDef(self, node):
+        loc = (node.lineno, node.col_offset)
+        if loc in self.static_to_class:
+            print(f"{node.name} static > class")
+        if loc in self.class_to_static:
+            print(f"{node.name} class > static")
+        if loc in self.instance_to_class:
+            print(f"{node.name} instance > class")
+            args = [ast.arg(arg="cls", annotation=None)] + [
+                i for i in node.args.args if i.arg != "self"
+            ]
+            node = SelfToClass().visit(node)
+            node = ast.copy_location(
+                ast.FunctionDef(
+                    name=node.name,
+                    args=ast.arguments(
+                        args=args,
+                        vararg=node.args.vararg,
+                        kwonlyargs=node.args.kwonlyargs,
+                        kw_defaults=node.args.kw_defaults,
+                        kwarg=node.args.kwarg,
+                        defaults=node.args.defaults,
+                    ),
+                    body=node.body,
+                    decorator_list=[ast.Name(id="classmethod", ctx=ast.Load())],
+                    returns=node.returns,
+                ),
+                node,
+            )
+        if loc in self.instance_to_static:
+            print(f"{node.name} instance > static")
+            node = ast.copy_location(
+                ast.FunctionDef(
+                    name=node.name,
+                    args=ast.arguments(
+                        args=[i for i in node.args.args if i.arg != "self"],
+                        vararg=node.args.vararg,
+                        kwonlyargs=node.args.kwonlyargs,
+                        kw_defaults=node.args.kw_defaults,
+                        kwarg=node.args.kwarg,
+                        defaults=node.args.defaults,
+                    ),
+                    body=node.body,
+                    decorator_list=[ast.Name(id="staticmethod", ctx=ast.Load())],
+                    returns=node.returns,
+                ),
+                node,
+            )
+        return self.generic_visit(node)
 
 
 if __name__ == "__main__":
-    parse("sample/armus.py")
+    with open("sample/armus.py") as f:
+        tree = ast.parse(f.read())
+    node = Serpens().visit(tree)
+    with open("modified.py", "w") as f:
+        f.write(astor.to_source(node))
